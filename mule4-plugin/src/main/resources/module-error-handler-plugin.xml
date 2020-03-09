@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module name="Error Handler Plugin" prefix="error-handler-plugin" category="SELECT"
+	doc:description="This module relies entirely in runtime provided components (no other Plugin dependencies)" xmlns="http://www.mulesoft.org/schema/mule/module" xmlns:mule="http://www.mulesoft.org/schema/mule/core"
+	xmlns:amqp="http://www.mulesoft.org/schema/mule/amqp" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+           http://www.mulesoft.org/schema/mule/module http://www.mulesoft.org/schema/mule/module/current/mule-module.xsd
+           http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+           http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+           http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+           http://www.mulesoft.org/schema/mule/amqp http://www.mulesoft.org/schema/mule/amqp/current/mule-amqp.xsd">
+
+	<property name="apiName" type="any" use="OPTIONAL" displayName="API Name" defaultValue="#[Mule::p('api.name')]" />
+	<property name="apiVersion" type="any" use="OPTIONAL" displayName="API Version" defaultValue="#[Mule::p('api.version')]" />
+	<operation name="on-error" displayName="Process Error">
+		<parameters>
+			<parameter name="error" type="any" defaultValue="#[error]" role="BEHAVIOUR"></parameter>
+			<parameter name="correlationId" type="any" defaultValue="#[correlationId]" role="BEHAVIOUR"></parameter>
+			<parameter name="useStandardErrors" type="boolean" role="BEHAVIOUR" use ="OPTIONAL"></parameter>
+			<parameter name="customErrors" type="CustomErrorSchema" role="CONTENT"></parameter>
+		</parameters>
+		<body>
+			<mule:set-variable value="#[(vars.error.errorType.namespace default '') ++ ':' ++ (vars.error.errorType.identifier default '')]" variableName="errorType"></mule:set-variable>
+			<mule:set-variable variableName="defaultErrorDesc" value="#[vars.error.description]" />
+			<mule:logger level="INFO" message="Error Type #[vars.errorType]" category="com.mulesoft.errorhandler.plugin"/>
+			<mule:logger level="INFO" message="UseStandard Error Type #[vars.useStandardErrors ]" category="com.mulesoft.errorhandler.plugin"/>
+			<mule:choice>
+				<mule:when expression="#[vars.useStandardErrors default true]">
+					<mule:set-variable value="#[${file::dwl/standardErrorHanldlers.dwl} default {}]" variableName="standardErrors" />
+				</mule:when>
+				<mule:otherwise>
+					<mule:set-variable value="#[{}]" doc:name="Default Errors" variableName="standardErrors" />
+				</mule:otherwise>
+			</mule:choice>
+			<mule:logger level="DEBUG" message="standardErrors  #[vars.standardErrors]" category="com.mulesoft.errorhandler.plugin"></mule:logger>
+			<mule:logger level="DEBUG" message="customErrors  #[vars.customErrors]" category="com.mulesoft.errorhandler.plugin"></mule:logger>
+			<ee:transform doc:name="Error Response " doc:id="2390a216-b124-40d9-bad9-b45381f43e62">
+				<ee:variables>
+					<ee:set-variable variableName="errorPayload"><![CDATA[%dw 2.0
+output application/json
+fun mapError(errorCode, errorMessage, reason) = {
+	code: errorCode,
+	reason: reason,
+	message: errorMessage
+}
+var customErrors = (if(isEmpty(vars.customErrors)) {} else vars.customErrors) default {}
+fun loadErrorConfig(errType) = (customErrors[errType]) match  {
+				    case obj if(obj !=null) -> customErrors[errType]
+				    else -> vars.standardErrors[errType] default {}
+				    }
+var result = loadErrorConfig(vars.errorType) default {}
+---
+{
+	"success": false,
+	"apiName": vars.apiName,
+	"version": vars.apiVersion,
+	"correlationId": vars.correlationId,
+	"timestamp": now(),
+	"errorDetails": if(isEmpty(result))
+			                     mapError(500,'Internal Server Error', 'UNKNOWN')
+							else
+							    mapError(result.errorCode, result.defaultError, vars.'errorType')
+}]]></ee:set-variable>
+				</ee:variables>
+			</ee:transform>
+			<mule:set-payload value="#[%dw 2.0 output application/json --- vars.errorPayload]" />
+			<ee:transform doc:name="Http Status Code">
+				<ee:message>
+					<ee:set-attributes><![CDATA[%dw 2.0
+output application/java
+---
+{
+	httpStatus: payload.code default 500
+}
+]]></ee:set-attributes>
+				</ee:message>
+			</ee:transform>
+			<mule:logger level="DEBUG" message="ErrorPayload  #[payload]" category="com.mulesoft.errorhandler.plugin"></mule:logger>
+
+		</body>
+
+		<output type="ErrorResponseType"></output>
+		<output-attributes type="OutputAttributesType"></output-attributes>
+	</operation>
+
+</module>
